@@ -7,6 +7,11 @@ Created on Wed Feb 24 23:15:51 2021
 import chess.pgn
 import numpy as np
 
+import chess.engine
+import os
+cwd = os.getcwd()
+ENGINE = chess.engine.SimpleEngine.popen_uci(cwd+'/sf.exe')
+
 chess_dict = {
                 'p' : [1,0,0,0,0,0,0,0,0,0,0,0],
                 'P' : [0,0,0,0,0,0,1,0,0,0,0,0],
@@ -53,11 +58,13 @@ def state_from_board(board):
 
 class ChessEnv:
     
-    def __init__(self):
+    def __init__(self,sf_depth=20, mate_reward=1e5):
         self.board = None
         self.pieces = ['','p','b','k','q','n','r','P','B','K','Q','N','R','P']
         self.columns= ['a','b','c','d','e','f','g','h']
         self.rows = range(1,9)
+        self.sf_depth = sf_depth
+        self.mate_reward = mate_reward
         
     def reset(self):
         self.board = chess.Board()
@@ -77,7 +84,8 @@ class ChessEnv:
         '''
         board_before = self.board
         self.board.push_uci(action)
-        reward =  None #just for completion's sake, we want to build a reward model later
+        #reward =  None #just for completion's sake, we want to build a reward model later
+        reward = self.reward()
         done = self.board.is_game_over()
         info = [board_before, self.action, self.board] 
         return state_from_board(self.board), reward, done, info
@@ -101,4 +109,7 @@ class ChessEnv:
                             action_space.append(i+j+m+n+p)
         return action_space
     
-    
+    def reward(self):
+        board = self.board
+        info = ENGINE.analyse(board, chess.engine.Limit(depth=self.sf_depth))
+        return info['score'].relative.score(mate_score=self.mate_reward)
