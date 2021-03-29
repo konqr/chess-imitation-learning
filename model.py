@@ -25,7 +25,7 @@ class ChessModel(nn.Module):
     def __init__(self):
         super(ChessModel, self).__init__()
         self.layer1 = nn.Sequential(
-            nn.Conv2d(12,32, kernel_size=1),
+            nn.Conv2d(8,32, kernel_size=1),
             nn.BatchNorm2d(32),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=1))
@@ -34,11 +34,14 @@ class ChessModel(nn.Module):
             nn.BatchNorm2d(16),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=1))
-        self.fc_value = nn.Linear(20*1024, 1)
-        self.fc_actions = nn.Linear(20*1024, len(chessenv.ChessEnv().action_space()))
+        self.fc_value = nn.Linear(1536, 1)
+        self.fc_actions = nn.Linear(1536, len(chessenv.ChessEnv().action_space()))
         
-    def forward(self, x):
-        x = chessenv.make_matrix(x)
+    def forward(self, s):
+        x = chessenv.state_from_board(s)
+        # s.push(a)
+        # x2 = chessenv.state_from_board(s)
+        x = torch.Tensor([x]) # + x2])
         out = self.layer1(x)
         out = self.layer2(out)
         out = torch.flatten(out)
@@ -91,29 +94,26 @@ class ValueCalculator:
         # (state => Action :List[List])
 
     def calcQ(self, net, s, A):
-        # 1.single state, one or multiple actions
-        # 2.muliplte states, one action per state, s must be a list of tensors
-        if True: #isinstance(s, torch.Tensor) and s.dim() == 1:  # situation 1
-            A = torch.Tensor(A)
-            if A.dim() == 1:
-                return net(s, A)[0]
-            return torch.Tensor([net(s, a) for a in A])
-
-        # if not isinstance(s, torch.Tensor):  # situation 2
-        #     s = torch.stack(s)
-        #     a = torch.Tensor(A)
-        #     return net(s, a).squeeze()
-            # [[10.2],[5.3]] => [10.2,5.3]
+        if isinstance(s,tuple):
+            result = []
+            for s_i, A_i in zip(s,A):
+                res = net(s_i)
+                if not isinstance(A_i,str): A_i = A_i.uci()
+                index_A = chessenv.ChessEnv().action_space().index(A_i)
+                result.append(res[index_A].item())
+            return torch.tensor(result)
+        return net(s)
 
     def sortedA(self, state):
         # return sorted action
         net = self.predictNet
         net.eval()
-        A = self.actionFinder(state)
+        A = [x.uci() for x in self.actionFinder(state)]
+        A_all = chessenv.ChessEnv().action_space()
         Q = self.calcQ(net, state, A)
-        A = [a for q,a in sorted(zip(Q, A),reverse=True,key=lambda x:x[0])]
+        A_sorted = [a for q,a in sorted(zip(Q, A_all),reverse=True,key=lambda x:x[0]) if a in A]
         net.train()
-        return A
+        return A_sorted
 
     def updateTargetNet(self):
         self.targetNet.load_state_dict(self.predictNet.state_dict())
@@ -169,7 +169,7 @@ class DeepImitationLearning:
         all_s, all_a, all_r, all_s_, all_done, *_= zip(*samples)
         maxA = [self.value_calc.sortedA(s_)[0] for s_ in all_s_]
         Qtarget = torch.Tensor(all_r)
-        Qtarget[torch.tensor(all_done) != 1] += self.gamma + self.value_calc.calcQ(self.value_calc().targetNet, all_s_, maxA)[torch.tensor(all_done) != 1]
+        Qtarget[torch.tensor(all_done) != 1] += self.gamma*self.value_calc.calcQ(self.value_calc.targetNet, all_s_, maxA)[torch.tensor(all_done) != 1]
         Qpredict = self.value_calc.calcQ(self.value_calc.predictNet,all_s,all_a)
         return Qpredict, Qtarget
     
@@ -184,13 +184,11 @@ class DeepImitationLearning:
                 continue
             QE = self.value_calc.calcQ(self.value_calc.predictNet,s,aE)
             A1, A2 = np.array(A)[:2]
-            maxA = A2 if (A1==aE).all() else A1
+            maxA = A2 if (A1==aE) else A1
             Q = self.value_calc.calcQ(self.value_calc.predictNet,s,maxA)
-            if (Q+self.margin) < QE:
-                continue
-            else:
-                loss += Q-QE
-                count += 1
+            loss_i = (Q-QE)[(Q+self.margin) > QE]
+            loss += sum(loss_i)
+            count += len(loss_i)
         return loss/count if count!=0 else loss
     
     def Jn(self, samples, Qpredict):
@@ -222,9 +220,13 @@ class DeepImitationLearning:
             error = math.fabs(float(Qpredict[i]-Qtarget[i]))
             self.replay.update(idxs[i], error)
         Jtd = self.loss(Qpredict, Qtarget, IS*0+1)
+        print(Jtd)
         JE = self.JE(samples)
+        print(JE)
         Jn = self.Jn(samples,Qpredict)
+        print(Jn)
         J = Jtd + self.lambda2*JE + self.lambda1*Jn
+        print(J)
         J.backward()
         self.opt.step()
         if self.target_replace_counter >= self.freq_target_replace:
@@ -232,12 +234,21 @@ class DeepImitationLearning:
             self.value_calc.updateTargetNet()
         else:
             self.target_replace_counter+=1
-        
+     
+import shutil
+def save_ckp(state, is_best, checkpoint_dir, best_model_dir):
+    f_path = checkpoint_dir +'/checkpoint.pt'
+    torch.save(state, f_path)
+    if is_best:
+        best_fpath = best_model_dir + '/best_model.pt'
+        shutil.copyfile(f_path, best_fpath)
+
 if __name__ == "__main__":
+    torch.set_default_tensor_type('torch.cuda.FloatTensor')
     env = chessenv.ChessEnv()
     s = env.reset()
-    dqn = DeepImitationLearning(ChessModel)
-    epoch = 100
+    dqn = DeepImitationLearning(ChessModel,minibatchsize=128)
+    epochs = 100
     eps_start = 0.05
     eps_end = 0.95
     N = 1 - eps_start
@@ -248,7 +259,7 @@ if __name__ == "__main__":
     process = []
     pretendor = 'Fischer'
     
-    game_list = loaddata('data/'+pretendor+'.pgn')[0:1]
+    game_list = loaddata('data/'+pretendor+'.pgn')
     episodeId=0
     for game in game_list:
         demoEpisode = game.headers
@@ -262,11 +273,18 @@ if __name__ == "__main__":
             
     dqn.replay.tree.start = start
     for i in range(500):
-        if i %100 == 0:
+        if i %1 == 0:
             print('pretrain:',i)
         dqn.update()
+        # checkpoint = {
+        #     'epoch': epoch + 1,
+        #     'state_dict': model.state_dict(),
+        #     'optimizer': optimizer.state_dict()
+        # }
+        # save_ckp(checkpoint, is_best, checkpoint_dir, model_dir)
         
-    for i in range(epoch):
+        
+    for i in range(epochs):
         print(i)
         dqn.eps = 1 - N*math.exp(-lam*i)
         count += 1
@@ -285,3 +303,19 @@ if __name__ == "__main__":
     
     
 # TODO: change the reward sign for black player
+
+
+
+
+
+
+# def load_ckp(checkpoint_fpath, model, optimizer):
+#     checkpoint = torch.load(checkpoint_fpath)
+#     model.load_state_dict(checkpoint['state_dict'])
+#     optimizer.load_state_dict(checkpoint['optimizer'])
+#     return model, optimizer, checkpoint['epoch']
+
+# model = MyModel(*args, **kwargs)
+# optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+# ckp_path = "path/to/checkpoint/checkpoint.pt"
+# model, optimizer, start_epoch = load_ckp(ckp_path, model, optimizer)
