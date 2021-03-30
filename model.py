@@ -6,6 +6,7 @@ Created on Thu Feb 25 00:02:03 2021
 """
 import math
 import random
+import pickle
 import torch 
 import torch.nn as nn
 from torch import optim
@@ -61,23 +62,29 @@ def loaddata(path='data/Fischer.pgn'):
             game_list.append(g)
     return game_list
 
-def transformsarsa(game,color):
-    s = chess.Board()
-    moves = list(game.mainline_moves())
-    results = []
-    isWhite = True #corresponds to White
-    for move in moves:
-        s_ = s.copy()
-        #info = ENGINE.analyse(s_, chess.engine.Limit(depth=20))
-        #r1 = info['score'].relative.score(mate_score=1e5)
-        s_.push(move)
-        info = ENGINE.analyse(s_, chess.engine.Limit(depth=20))
-        r2 = info['score'].relative.score(mate_score=1e5)
-        done = s_.is_game_over()
-        if ((color == 'White') and isWhite) or ((color=='Black')and not isWhite):
-            results.append((s,move,r2,s_,done))
-        s = s_.copy()
-        isWhite = not isWhite
+def transformsarsa(game,color,pretendor,episodeId):
+    try:
+        with open ('data/'+pretendor+str(episodeId), 'rb') as fp:
+            results = pickle.load(fp)
+    except:
+        s = chess.Board()
+        moves = list(game.mainline_moves())
+        results = []
+        isWhite = True #corresponds to White
+        for move in moves:
+            s_ = s.copy()
+            #info = ENGINE.analyse(s_, chess.engine.Limit(depth=20))
+            #r1 = info['score'].relative.score(mate_score=1e5)
+            s_.push(move)
+            info = ENGINE.analyse(s_, chess.engine.Limit(depth=20))
+            r2 = info['score'].relative.score(mate_score=1e5)
+            done = s_.is_game_over()
+            if ((color == 'White') and isWhite) or ((color=='Black')and not isWhite):
+                results.append((s,move,r2,s_,done))
+            s = s_.copy()
+            isWhite = not isWhite    
+        with open('data/'+pretendor+str(episodeId), 'wb') as fp:
+            pickle.dump(results, fp)
     return results
 
 def legal_action(board):
@@ -252,7 +259,7 @@ if __name__ == "__main__":
     eps_start = 0.05
     eps_end = 0.95
     N = 1 - eps_start
-    lam = - math.log((1-eps_end)/N)/epoch
+    lam = - math.log((1-eps_end)/N)/epochs
     total = 0
     count = 0
     start = 0
@@ -264,7 +271,7 @@ if __name__ == "__main__":
     for game in game_list:
         demoEpisode = game.headers
         color_player = 'White' if pretendor in demoEpisode['White'] else 'Black'
-        sarsa_game = transformsarsa(game,color_player)
+        sarsa_game = transformsarsa(game,color_player,pretendor,episodeId)
         for s,a,r,s_,done in sarsa_game:
             start+=1
             dqn.storeDemoTransition(s, a, r, s_, done, episodeId)
