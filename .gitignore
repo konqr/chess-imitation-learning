@@ -1,1 +1,5 @@
 data/
+__pycache__/
+checkpoints/
+__MACOSX/
+.ipynb_checkpoints/

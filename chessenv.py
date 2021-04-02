@@ -10,7 +10,10 @@ import numpy as np
 import chess.engine
 import os
 cwd = os.getcwd()
-ENGINE = chess.engine.SimpleEngine.popen_uci(cwd+'/sf.exe')
+#ENGINE = chess.engine.SimpleEngine.popen_uci('./stockfish_13_linux_x64_bmi2')
+from stockfish import Stockfish
+SF = Stockfish('sf.exe')
+SF._go_time(1000)
 
 chess_dict = {
                 'p' : [1,0,0,0,0,0,0,0,0,0,0,0],
@@ -58,8 +61,8 @@ def state_from_board(board):
 
 class ChessEnv:
     
-    def __init__(self,sf_depth=20, mate_reward=1e5):
-        self.board = None
+    def __init__(self,board=None,sf_depth=20, mate_reward=1e5):
+        self.board = board
         self.pieces = ['','p','b','k','q','n','r','P','B','K','Q','N','R','P']
         self.columns= ['a','b','c','d','e','f','g','h']
         self.rows = range(1,9)
@@ -82,13 +85,13 @@ class ChessEnv:
         None.
 
         '''
-        board_before = self.board
+        board_before = self.board.copy()
         self.board.push_uci(action)
         #reward =  None #just for completion's sake, we want to build a reward model later
         reward = self.reward()
         done = self.board.is_game_over()
-        info = [board_before, self.action, self.board] 
-        return state_from_board(self.board), reward, done, info
+        info = [board_before, action, self.board] 
+        return self.board.copy(), reward, done, info
         
     def update(self,board):
         self.board = board
@@ -134,5 +137,12 @@ class ChessEnv:
     
     def reward(self):
         board = self.board
-        info = ENGINE.analyse(board, chess.engine.Limit(depth=self.sf_depth))
-        return info['score'].relative.score(mate_score=self.mate_reward)
+        SF.set_fen_position(board.fen())
+        
+        evaluation = SF.get_evaluation()
+        if evaluation['type'] == 'mate':
+          return  self.mate_reward
+        else:
+          return abs(evaluation['value'])
+        # info = ENGINE.analyse(board, chess.engine.Limit(time=self.sf_depth))
+        # return info['score'].relative.score(mate_score=self.mate_reward)
